@@ -1248,6 +1248,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     previousStatus: "todo" | "in_progress";
   }) {
+    // Defense in depth against recovery-issue cascade. The candidate query in
+    // reconcileStrandedAssignedIssues already filters these origins out, but
+    // refuse here too in case other call sites grow.
+    const sourceOriginKind = input.issue.originKind;
+    if (
+      sourceOriginKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||
+      sourceOriginKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation ||
+      sourceOriginKind === RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation
+    ) {
+      return null;
+    }
+
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
@@ -1404,6 +1416,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    // Cascade guard: never treat recovery-origin issues as themselves stalled.
+    // Without this, a recovery issue that fails to dispatch would itself be
+    // classified as stranded and produce another recovery issue, ad infinitum
+    // (see incident 2026-04-25: 17,786 self-replicating Recover stalled issues).
     const candidates = await db
       .select()
       .from(issues)
@@ -1412,6 +1428,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
+          notInArray(issues.originKind, [
+            RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+            RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+            RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+          ]),
         ),
       );
 
