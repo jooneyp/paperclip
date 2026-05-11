@@ -93,6 +93,8 @@ const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
 const DEFAULT_ROLE = "operator";
 
+const OPENCLAW_AGENT_RESERVED_PAYLOAD_KEYS = new Set(["paperclip"]);
+
 const SENSITIVE_LOG_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
 
@@ -154,6 +156,22 @@ export function resolveSessionKey(input: {
     return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId);
   }
   return prefixSessionKeyForAgent(fallback, input.agentId);
+}
+
+export function stripReservedOpenClawAgentParams(params: Record<string, unknown>): {
+  params: Record<string, unknown>;
+  strippedKeys: string[];
+} {
+  const next: Record<string, unknown> = {};
+  const strippedKeys: string[] = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (OPENCLAW_AGENT_RESERVED_PAYLOAD_KEYS.has(key)) {
+      strippedKeys.push(key);
+      continue;
+    }
+    next[key] = value;
+  }
+  return { params: next, strippedKeys };
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -1130,24 +1148,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
-
-  const agentParams: Record<string, unknown> = {
+  const agentParamsBase: Record<string, unknown> = {
     ...payloadTemplate,
     message,
     sessionKey,
     idempotencyKey: ctx.runId,
   };
-  delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  delete agentParamsBase.text;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
-  if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
-    agentParams.agentId = configuredAgentId;
+  if (configuredAgentId && !nonEmpty(agentParamsBase.agentId)) {
+    agentParamsBase.agentId = configuredAgentId;
   }
 
-  if (typeof agentParams.timeout !== "number") {
-    agentParams.timeout = waitTimeoutMs;
+  if (typeof agentParamsBase.timeout !== "number") {
+    agentParamsBase.timeout = waitTimeoutMs;
+  }
+
+  const { params: agentParams, strippedKeys } = stripReservedOpenClawAgentParams(agentParamsBase);
+  if (strippedKeys.length > 0) {
+    await ctx.onLog(
+      "stdout",
+      `[openclaw-gateway] stripped reserved agent param keys: ${strippedKeys.sort().join(", ")}\n`,
+    );
   }
 
   if (ctx.onMeta) {

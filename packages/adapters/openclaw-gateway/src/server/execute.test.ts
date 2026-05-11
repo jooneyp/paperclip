@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { resolveSessionKey, stripReservedOpenClawAgentParams } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -48,5 +48,23 @@ describe("resolveSessionKey", () => {
         issueId: null,
       }),
     ).toBe("agent:meridian:paperclip");
+  });
+});
+
+describe("stripReservedOpenClawAgentParams", () => {
+  it("removes Paperclip-only context fields before calling OpenClaw agent", () => {
+    const result = stripReservedOpenClawAgentParams({
+      message: "wake up",
+      sessionKey: "agent:pieter:paperclip:issue:STO-1",
+      idempotencyKey: "run-1",
+      paperclip: { issueId: "STO-1" },
+    });
+
+    expect(result.strippedKeys).toEqual(["paperclip"]);
+    expect(result.params).toEqual({
+      message: "wake up",
+      sessionKey: "agent:pieter:paperclip:issue:STO-1",
+      idempotencyKey: "run-1",
+    });
   });
 });
